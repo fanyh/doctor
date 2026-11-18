@@ -1,0 +1,60 @@
+#!/bin/sh
+# doctor —— 工程级 CDM 评估入口(Crapper/Dryer/Mutator,lint 式报告,不评分)。
+# 模型:nvim 式统一入口 + 每语言一个适配器(lib/doctor/<lang>.sh);新语言 = 加一个适配器文件。
+# 范围:仓库有未提交改动 → 只查改动文件(范围:diff);干净 → 整仓;--all 强制整仓,--diff 强制只查改动。
+# 过滤:工程根目录的 .doctorignore(每行一个 ERE 正则,# 注释)供给 DOCTOR_EXCLUDE。
+# 用法:doctor [--all|--diff] [目录]
+set -u
+SCOPE=auto
+DIR=
+for a in "$@"; do
+	case "$a" in
+		--all)  SCOPE=all ;;
+		--diff) SCOPE=diff ;;
+		*)      DIR=$a ;;
+	esac
+done
+SELF=$(readlink -f "$0" 2>/dev/null || echo "$0")
+LIB=${DOCTOR_LIB:-$(dirname "$SELF")/../lib/doctor}
+cd "${DIR:-.}" || exit 2
+# 文件清单 = git 视角(tracked + 未忽略的 untracked),.gitignore 天然生效;
+# 隐藏目录(.git/.opencode/…)一律不算——go list 本来就跳过它们,Lua/Python 同规则;
+# 非 git 目录用 find 兜底。适配器一律从此清单取文件 → 过滤契约 = .gitignore ∪ .doctorignore
+FL=$(mktemp) && trap 'rm -f "$FL"' EXIT
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+	git ls-files --cached --others --exclude-standard
+else
+	find . -type f
+fi | grep -vE '(^|/)\.' > "$FL"
+DOCTOR_FILELIST=$FL
+export DOCTOR_FILELIST
+if [ -f .doctorignore ]; then
+	# 行类型:# 注释(支持行内注释) / 文件级正则(DOCTOR_EXCLUDE) / 函数级 路径::函数(DOCTOR_FUNCS_EX)
+	#         / dryer: 前缀(只压 Dryer 的 clone 配对,任一侧命中即不报)
+	#         / dryer-poly off · dryer-mirror off(关闭 Dryer 的多态/镜像归组展开)
+	fx=$(grep -vE '^[[:space:]]*(#|$)' .doctorignore | grep '::' || true)
+	dx=$(grep -vE '^[[:space:]]*(#|$)' .doctorignore | grep '^dryer:' | sed 's/^dryer:[[:space:]]*//' || true)
+	px=$(grep -vE '^[[:space:]]*(#|$)' .doctorignore | grep -vE '(::|^dryer[-:])' || true)
+	# 行内注释(空白后接 #)和行尾空白剥掉,否则会被并进正则静默失配
+	fx=$(printf '%s\n' "$fx" | sed 's/[[:space:]]#.*$//;s/[[:space:]]*$//')
+	dx=$(printf '%s\n' "$dx" | sed 's/[[:space:]]#.*$//;s/[[:space:]]*$//')
+	px=$(printf '%s\n' "$px" | sed 's/[[:space:]]#.*$//;s/[[:space:]]*$//')
+	ex=$(printf '%s\n' "$px" | tr '\n' '|' || true)
+	ex=${ex%|}
+	[ -n "$ex" ] && { DOCTOR_EXCLUDE="$ex"; export DOCTOR_EXCLUDE; }
+	[ -n "$fx" ] && { DOCTOR_FUNCS_EX="$fx"; export DOCTOR_FUNCS_EX; }
+	[ -n "$dx" ] && { DOCTOR_DRYER_EX="$dx"; export DOCTOR_DRYER_EX; }
+	grep -Eq '^dryer-poly[[:space:]]+off' .doctorignore && { DOCTOR_DRYER_POLY=off; export DOCTOR_DRYER_POLY; }
+	grep -Eq '^dryer-mirror[[:space:]]+off' .doctorignore && { DOCTOR_DRYER_MIRROR=off; export DOCTOR_DRYER_MIRROR; }
+fi
+DOCTOR_SCOPE=$SCOPE
+export DOCTOR_SCOPE
+found=0
+for adapter in "$LIB"/*.sh; do
+	[ -f "$adapter" ] || continue
+	case "$adapter" in */common.sh) continue ;; esac
+	sh "$adapter"
+	[ $? -eq 0 ] && found=1
+done
+[ "$found" -eq 0 ] && echo "unrecognized project type (adapters: go/lua/python/sh; add lib/doctor/<lang>.sh)"
+exit 0
