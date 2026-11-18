@@ -51,7 +51,15 @@ else
 	[ -n "$FILES" ] || FILES=$(find $DIRS -name '*.go' ! -name '*_test.go')
 fi
 
+# cb 供 Crapper/Dryer/Mutator 共用；tests-only 时 Crapper 段跳过，不能只在段内生成
+if [ "$SCOPE" = diff ]; then
+	printf '%s\n' "$CHANGED" > "$T/cb"
+fi
+
 echo "── Crapper: CRAP >= 10 ──"
+if [ -z "$FILES" ]; then
+	echo "  (none)"
+else
 # funcs 每行: 函数名 分支 join路径(无行号,对 cover/deadcode) 显示路径(带声明行)
 gocyclo -over 0 $FILES | awk '{n=$3; sub(/.*\./,"",n); d=$NF; sub(/:[0-9]+$/,"",d); p=d; sub(/:[0-9]+$/,"",p); print n, $1, p, d}' \
 	| sort -u > "$T/funcs"
@@ -66,7 +74,6 @@ fi
 
 # ── 范围过滤:diff 模式下只留改动文件内的条目(按完整相对路径) ──
 if [ "$SCOPE" = diff ]; then
-	printf '%s\n' "$CHANGED" > "$T/cb"
 	awk 'FILENAME==ARGV[1] { c[$1]=1; next } ($3 in c)' "$T/cb" "$T/covf" > "$T/x" && mv "$T/x" "$T/covf"
 	awk 'FILENAME==ARGV[1] { c[$1]=1; next } ($3 in c)' "$T/cb" "$T/funcs" > "$T/x" && mv "$T/x" "$T/funcs"
 fi
@@ -77,6 +84,7 @@ out=$(awk 'FILENAME==ARGV[1] { cov[$1"_"$3]=$2; next }
   if (crap>=10) printf "  %-22s %6.1f %4d %-6s (%s)\n", $1, crap, comp, (c<0?"--":c"%"), $4 }' \
 	"$T/covf" "$T/funcs" | sort -k2 -rn)
 	[ -n "$out" ] && { printf "  %-22s %6s %4s %-6s %s\n" Function CRAP Comp Cov Path; echo "$out"; } || echo "  (none)"
+fi
 
 echo "── Dryer: repeated blocks (>=64 tokens) ──"
 if [ "$SCOPE" = diff ]; then

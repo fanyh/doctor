@@ -7,7 +7,27 @@ EX='3rd|vendor|node_modules|\.git'
 export DOCTOR_EXCLUDE="$EX"
 FILES=$(grep '\.lua$' "${DOCTOR_FILELIST:-/dev/null}" 2>/dev/null | grep -Ev "$EX")
 [ -n "$FILES" ] || FILES=$(find . -maxdepth 4 -name '*.lua' -not -path '*/.opencode/*' 2>/dev/null | grep -Ev "$EX" | sed 's|^\./||' || true)
+# 门禁:整仓没有 lua 就不认这个工程;范围收窄只能发生在门内
 [ -n "$FILES" ] || exit 3
+# 范围与 Go 适配器对齐：显式 diff 只看改动；auto 有改动看改动，无改动仍扫全仓
+scope=${DOCTOR_SCOPE:-auto}
+if [ "$scope" = auto ]; then
+	if [ -n "$( { git diff --name-only HEAD 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | grep -vE '(^|/)\.' | head -1 )" ]; then
+		scope=diff
+	else
+		scope=all
+	fi
+fi
+if [ "$scope" = diff ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+	changed=$( { git diff --name-only HEAD 2>/dev/null; git ls-files --others --exclude-standard 2>/dev/null; } | grep '\.lua$' | grep -Ev "$EX" | grep -vE '(^|/)\.' | sort -u)
+	if [ -n "$changed" ]; then
+		FILES=$(printf '%s\n' "$changed" | while IFS= read -r f; do [ -f "$f" ] && printf '%s\n' "$f"; done)
+	else
+		echo "== Lua (*.lua, excluded: $EX) =="
+		echo "  (none)"
+		exit 0
+	fi
+fi
 echo "== Lua (*.lua, excluded: $EX) =="
 
 echo "── Crapper: CRAP >= 10 ──"
